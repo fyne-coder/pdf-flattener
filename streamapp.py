@@ -1,32 +1,30 @@
 #!/usr/bin/env python3
 """
-streamlit_app.py — Flatten a PDF into an image‑only PDF, page‑by‑page.
+streamlit_app.py — Flatten a PDF into an image‑only PDF (low‑memory, page‑by‑page).
 
 Run:
-    streamlit run streamapp.py
+    streamlit run streamlit_app.py
 """
 
-from __future__ import annotations
-
-import gc
-import logging
-import os
-import sys
-import tempfile
+import os, shutil, sys, logging, gc, tempfile
 from pathlib import Path
 from typing import Callable, List
 
-import img2pdf
 import streamlit as st
-from pdf2image import convert_from_path, exceptions as pdf2image_exc
-from pdf2image.pdf2image import _page_count  # internal helper
+import img2pdf
+from pdf2image import convert_from_path, pdfinfo_from_path, exceptions as pdf2image_exc
 
-POPPLER_PATH = "/usr/bin"        # adjust for your host
-MAX_FILE_SIZE = 25_000_000       # 25 MB
+# ── Poppler path detection ──────────────────────────────────────────────
+_pdfinfo_exe = shutil.which("pdfinfo")
+if _pdfinfo_exe:
+    POPPLER_PATH = os.path.dirname(_pdfinfo_exe)  # directory, not full exe path
+else:
+    POPPLER_PATH = os.getenv("POPPLER_PATH")      # optional env override
+
+MAX_FILE_SIZE = 25_000_000  # 25 MB
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 
-
-# ── helpers ──────────────────────────────────────────────────────────────
+# ── helpers ───────────────────────────────────────────────
 def rasterise_pdf_streaming(
     src: Path,
     dpi: int,
@@ -34,33 +32,35 @@ def rasterise_pdf_streaming(
     out_dir: Path,
     update: Callable[[float], None] | None = None,
 ) -> List[Path]:
-    """Render one page at a time to minimise peak memory."""
+    """Render one page at a time to keep RAM low."""
     try:
-        total_pages = _page_count(str(src), poppler_path=POPPLER_PATH)
+        info_kwargs = {"poppler_path": POPPLER_PATH} if POPPLER_PATH else {}
+        page_count = int(pdfinfo_from_path(str(src), **info_kwargs)["Pages"])
     except pdf2image_exc.PDFInfoNotInstalledError:
-        st.error("Poppler not found. Add poppler-utils and ensure 'pdfinfo' is on PATH.")
+        st.error(
+            "Poppler not found. Install poppler-utils and ensure 'pdfinfo' is on PATH."
+        )
         raise
 
     jpeg_paths: List[Path] = []
-    for page_no in range(1, total_pages + 1):
-        images = convert_from_path(
-            str(src),
-            dpi=dpi,
-            first_page=page_no,
-            last_page=page_no,
-            poppler_path=POPPLER_PATH,
-        )
-        img = images[0]  # exactly one page
+    for page_no in range(1, page_count + 1):
+        convert_kwargs = {
+            "dpi": dpi,
+            "first_page": page_no,
+            "last_page": page_no,
+        }
+        if POPPLER_PATH:
+            convert_kwargs["poppler_path"] = POPPLER_PATH
+
+        img = convert_from_path(str(src), **convert_kwargs)[0]
         jpg_path = out_dir / f"page_{page_no:04d}.jpg"
         img.save(jpg_path, "JPEG", quality=quality)
         jpeg_paths.append(jpg_path)
 
-        # free memory held by the PIL Image
-        del img, images
+        del img
         gc.collect()
-
         if update:
-            update(page_no / total_pages)
+            update(page_no / page_count)
 
     if update:
         update(1.0)
@@ -68,7 +68,7 @@ def rasterise_pdf_streaming(
 
 
 def rebuild_pdf(jpegs: List[Path]) -> bytes:
-    """Combine JPEGs into one PDF; consume list then delete files."""
+    """Combine JPEGs into one PDF and delete temp files."""
     pdf_bytes = img2pdf.convert([str(p) for p in jpegs])
     for p in jpegs:
         try:
@@ -78,7 +78,7 @@ def rebuild_pdf(jpegs: List[Path]) -> bytes:
     return pdf_bytes
 
 
-# ── Streamlit app ────────────────────────────────────────────────────────
+# ── Streamlit app ────────────────────────────────────────
 def main() -> None:
     st.set_page_config(page_title="PDF Flattener", page_icon="📄", layout="centered")
     st.markdown("<style>footer{visibility:hidden;}</style>", unsafe_allow_html=True)
@@ -86,7 +86,7 @@ def main() -> None:
     st.title("📄 PDF Flattener")
     st.write(
         "Upload a PDF. Each page is rasterised to an image and rebuilt into a "
-        "**text‑free** PDF. If it fails, lower DPI or JPEG quality and retry."
+        "**text‑free** PDF. If processing fails, lower DPI or JPEG quality and try again."
     )
 
     file = st.file_uploader("Choose a PDF", type=["pdf"])
@@ -117,8 +117,8 @@ def main() -> None:
             except Exception as err:
                 logging.exception(err)
                 st.error(
-                    "Processing failed—likely out of memory. "
-                    "Lower DPI or JPEG quality, or use a smaller PDF."
+                    "Processing failed—possibly out of memory or Poppler missing. "
+                    "Lower DPI/quality or verify Poppler install and try again."
                 )
                 return
             finally:
@@ -135,7 +135,6 @@ def main() -> None:
                 mime="application/pdf",
             )
 
-    # centred footer
     st.markdown(
         "<div style='text-align:center;margin-top:3rem;font-size:0.9rem;'>"
         "Free to Use – Made by Fyne LLC – Arthur Lee – July 2025"
