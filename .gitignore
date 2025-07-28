@@ -1,0 +1,11 @@
+venv/
+__pycache__/
+*.pyc
+.DS_Store
+
+# Ignore editor settings (optional)
+.vscode/
+.idea/
+
+# Keep Python version file if you want; otherwise ignore it
+#.python-version
