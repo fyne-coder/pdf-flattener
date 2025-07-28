@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
-streamlit_main.py — Flatten a PDF into an image‑only PDF.
+streamlit_main.py —  Flatten a PDF into an image‑only PDF.
 
-Run:
+Run locally:
     streamlit run streamlit_main.py
 
 Requires:
-    streamlit, pdf2image, pillow (<11), img2pdf, Poppler on PATH.
+    streamlit, pdf2image, pillow (<11), img2pdf
+    Poppler utilities ('pdfinfo', 'pdftoppm') on PATH.
 """
 from __future__ import annotations
 
@@ -20,7 +21,7 @@ import streamlit as st
 from pdf2image import convert_from_path, exceptions as pdf2image_exc
 
 
-# ──────────────────────────── helpers ────────────────────────────
+# ── helpers ──────────────────────────────────────────────────────────────
 def rasterise_pdf(
     src: Path,
     dpi: int,
@@ -32,7 +33,7 @@ def rasterise_pdf(
     try:
         pages = convert_from_path(str(src), dpi=dpi)
     except pdf2image_exc.PDFInfoNotInstalledError:
-        st.error("Poppler not found. Install it and make sure 'pdfinfo' is on PATH.")
+        st.error("Poppler not found. Install it and add 'pdfinfo' to PATH.")
         raise
     except Exception as err:
         st.error(f"Unable to open PDF: {err}")
@@ -53,13 +54,29 @@ def rasterise_pdf(
 
 
 def rebuild_pdf(jpegs: List[Path]) -> bytes:
-    """Combine JPEG pages into a single PDF and return bytes."""
+    """Combine JPEG pages into one PDF and return bytes."""
     return img2pdf.convert([str(p) for p in jpegs])
 
 
-# ──────────────────────────── main app ───────────────────────────
+# ── main app ─────────────────────────────────────────────────────────────
 def main() -> None:
-    st.set_page_config(page_title="PDF Flattener", page_icon="📄", layout="centered")
+    st.set_page_config(
+        page_title="PDF Flattener",
+        page_icon="📄",
+        layout="centered",
+        initial_sidebar_state="collapsed",
+    )
+
+    # hide default Streamlit footer for a cleaner Community Cloud look
+    st.markdown(
+        """
+        <style>
+            footer {visibility: hidden;}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
     st.title("📄 PDF Flattener")
     st.markdown(
         "Upload a PDF. Each page is rasterised to an image, then rebuilt into a "
@@ -81,11 +98,7 @@ def main() -> None:
                 with tempfile.TemporaryDirectory() as tmpdir:
                     progress = st.progress(0.0)
                     jpeg_paths = rasterise_pdf(
-                        src_path,
-                        dpi,
-                        quality,
-                        Path(tmpdir),
-                        update=progress.progress,
+                        src_path, dpi, quality, Path(tmpdir), update=progress.progress
                     )
                     flattened = rebuild_pdf(jpeg_paths)
             finally:
@@ -98,6 +111,16 @@ def main() -> None:
             file_name=f"{Path(file.name).stem}_flattened.pdf",
             mime="application/pdf",
         )
+
+    # centered footer
+    st.markdown(
+        """
+        <div style="text-align:center; margin-top:3rem; font-size:0.9rem;">
+            Free to Use - Made by Fyne LLC - Arthur Lee - July 2025
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 if __name__ == "__main__":
