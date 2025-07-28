@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
 """
-streamlit_app.py — Flatten a PDF into an image‑only PDF.
+streamlit_app.py — Flatten a PDF into an image‑only PDF, page‑by‑page.
 
-Run locally:
-    streamlit run streamlit_app.py
-Requires:
-    streamlit, pdf2image, pillow (<11), img2pdf
-    Poppler utils installed (Streamlit Cloud: add `poppler-utils` to packages.txt)
+Run:
+    streamlit run streamapp.py
 """
+
 from __future__ import annotations
 
+import gc
 import logging
 import os
 import sys
@@ -20,67 +19,74 @@ from typing import Callable, List
 import img2pdf
 import streamlit as st
 from pdf2image import convert_from_path, exceptions as pdf2image_exc
+from pdf2image.pdf2image import _page_count  # internal helper
 
-# poppler path inside Streamlit Cloud
-POPPLER_PATH = "/usr/bin"
-MAX_FILE_SIZE = 25_000_000  # 25 MB
-
+POPPLER_PATH = "/usr/bin"        # adjust for your host
+MAX_FILE_SIZE = 25_000_000       # 25 MB
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 
 
 # ── helpers ──────────────────────────────────────────────────────────────
-def rasterise_pdf(
+def rasterise_pdf_streaming(
     src: Path,
     dpi: int,
     quality: int,
     out_dir: Path,
     update: Callable[[float], None] | None = None,
 ) -> List[Path]:
+    """Render one page at a time to minimise peak memory."""
     try:
-        pages = convert_from_path(
-            str(src), dpi=dpi, poppler_path=POPPLER_PATH  # explicit path
-        )
+        total_pages = _page_count(str(src), poppler_path=POPPLER_PATH)
     except pdf2image_exc.PDFInfoNotInstalledError:
-        st.error("Poppler not found. Install it and add 'pdfinfo' to PATH.")
-        raise
-    except Exception as err:
-        logging.exception(err)
-        st.error(f"Unable to open PDF: {err}")
+        st.error("Poppler not found. Add poppler-utils and ensure 'pdfinfo' is on PATH.")
         raise
 
-    total = len(pages)
-    paths: List[Path] = []
-    for idx, page in enumerate(pages, 1):
+    jpeg_paths: List[Path] = []
+    for page_no in range(1, total_pages + 1):
+        images = convert_from_path(
+            str(src),
+            dpi=dpi,
+            first_page=page_no,
+            last_page=page_no,
+            poppler_path=POPPLER_PATH,
+        )
+        img = images[0]  # exactly one page
+        jpg_path = out_dir / f"page_{page_no:04d}.jpg"
+        img.save(jpg_path, "JPEG", quality=quality)
+        jpeg_paths.append(jpg_path)
+
+        # free memory held by the PIL Image
+        del img, images
+        gc.collect()
+
         if update:
-            update(idx / total)
-        jpg = out_dir / f"page_{idx:04d}.jpg"
-        page.convert("RGB").save(jpg, "JPEG", quality=quality)
-        paths.append(jpg)
+            update(page_no / total_pages)
 
     if update:
         update(1.0)
-    return paths
+    return jpeg_paths
 
 
 def rebuild_pdf(jpegs: List[Path]) -> bytes:
-    return img2pdf.convert([str(p) for p in jpegs])
+    """Combine JPEGs into one PDF; consume list then delete files."""
+    pdf_bytes = img2pdf.convert([str(p) for p in jpegs])
+    for p in jpegs:
+        try:
+            os.remove(p)
+        except OSError:
+            pass
+    return pdf_bytes
 
 
-# ── main app ─────────────────────────────────────────────────────────────
+# ── Streamlit app ────────────────────────────────────────────────────────
 def main() -> None:
-    st.set_page_config(
-        page_title="PDF Flattener", page_icon="📄", layout="centered"
-    )
-
-    # hide default Streamlit footer
-    st.markdown(
-        "<style>footer {visibility: hidden;}</style>", unsafe_allow_html=True
-    )
+    st.set_page_config(page_title="PDF Flattener", page_icon="📄", layout="centered")
+    st.markdown("<style>footer{visibility:hidden;}</style>", unsafe_allow_html=True)
 
     st.title("📄 PDF Flattener")
-    st.markdown(
-        "Upload a PDF. Each page is rasterised to an image, then rebuilt into a "
-        "**text‑free** PDF."
+    st.write(
+        "Upload a PDF. Each page is rasterised to an image and rebuilt into a "
+        "**text‑free** PDF. If it fails, lower DPI or JPEG quality and retry."
     )
 
     file = st.file_uploader("Choose a PDF", type=["pdf"])
@@ -94,21 +100,32 @@ def main() -> None:
             st.stop()
 
         if st.button("Flatten PDF"):
-            logging.info("Starting flatten: %s  dpi=%s  q=%s", file.name, dpi, quality)
-            with st.spinner("Processing…"):
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-                    tmp.write(file.read())
-                    src_path = Path(tmp.name)
+            logging.info("Flattening %s  dpi=%s  q=%s", file.name, dpi, quality)
+            try:
+                with st.spinner("Processing…"):
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+                        tmp.write(file.read())
+                        src_path = Path(tmp.name)
 
-                try:
                     with tempfile.TemporaryDirectory() as td:
                         progress = st.progress(0.0)
-                        jpeg_paths = rasterise_pdf(
+                        jpeg_paths = rasterise_pdf_streaming(
                             src_path, dpi, quality, Path(td), update=progress.progress
                         )
                         flattened = rebuild_pdf(jpeg_paths)
-                finally:
+
+            except Exception as err:
+                logging.exception(err)
+                st.error(
+                    "Processing failed—likely out of memory. "
+                    "Lower DPI or JPEG quality, or use a smaller PDF."
+                )
+                return
+            finally:
+                try:
                     os.remove(src_path)
+                except OSError:
+                    pass
 
             st.success("Done! Download below.")
             st.download_button(
@@ -118,13 +135,11 @@ def main() -> None:
                 mime="application/pdf",
             )
 
-    # centered footer
+    # centred footer
     st.markdown(
-        """
-        <div style="text-align:center; margin-top:3rem; font-size:0.9rem;">
-            Free to Use – Made by Fyne LLC – Arthur Lee – July 2025
-        </div>
-        """,
+        "<div style='text-align:center;margin-top:3rem;font-size:0.9rem;'>"
+        "Free to Use – Made by Fyne LLC – Arthur Lee – July 2025"
+        "</div>",
         unsafe_allow_html=True,
     )
 
