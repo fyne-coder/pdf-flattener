@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-streamlit_app.py — Flatten a PDF into an image‑only PDF (low‑memory).
+streamlit_app.py — Flatten a PDF into an image‑only PDF (low‑memory, no disk files).
 
 Edit these FOUR constants to resize all text:
   BASE_FONT_PX       – body text & uploader copy
@@ -9,18 +9,21 @@ Edit these FOUR constants to resize all text:
   FOOTER_FONT_PX     – footer line
 """
 
+import io
 import gc
 import logging
 import os
 import shutil
 import sys
-import tempfile
-from pathlib import Path
 from typing import Callable, List
 
 import img2pdf
 import streamlit as st
-from pdf2image import convert_from_path, pdfinfo_from_path, exceptions as pdf2image_exc
+from pdf2image import (
+    convert_from_bytes,
+    pdfinfo_from_bytes,
+    exceptions as pdf2image_exc,
+)
 
 # ── EASY FONT CONTROLS ─────────────────────────────────────
 BASE_FONT_PX     = 26
@@ -32,44 +35,35 @@ FOOTER_FONT_PX   = 18
 PDFINFO_DIR   = os.path.dirname(shutil.which("pdfinfo") or "")
 POPPLER_KW    = {"poppler_path": PDFINFO_DIR} if PDFINFO_DIR else {}
 MAX_FILE_SIZE = 25_000_000  # 25 MB
+
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 
 
-def rasterise_streaming(
-    src: Path,
-    dpi: int,
-    quality: int,
-    out_dir: Path,
-    update: Callable[[float], None] | None,
-) -> List[Path]:
+def flatten_pdf_in_memory(pdf_bytes: bytes, dpi: int, quality: int) -> bytes:
+    """Render PDF pages in memory and return flattened PDF bytes."""
     try:
-        pages = int(pdfinfo_from_path(str(src), **POPPLER_KW)["Pages"])
+        info = pdfinfo_from_bytes(pdf_bytes, **POPPLER_KW)
+        page_count = int(info.get("Pages", 0))
     except pdf2image_exc.PDFInfoNotInstalledError:
-        st.error("Poppler not found. Install poppler-utils and ensure 'pdfinfo' is in PATH.")
+        st.error("Poppler not found. Install poppler‑utils and ensure 'pdfinfo' is in PATH.")
         raise
 
-    jpeg_paths: List[Path] = []
-    for p in range(1, pages + 1):
-        img = convert_from_path(
-            str(src), dpi=dpi, first_page=p, last_page=p, **POPPLER_KW
-        )[0]
-        jpg = out_dir / f"page_{p:04d}.jpg"
-        img.save(jpg, "JPEG", quality=quality)
-        jpeg_paths.append(jpg)
-        del img
+    buffers: List[io.BytesIO] = []
+    for page_no in range(1, page_count + 1):
+        imgs = convert_from_bytes(
+            pdf_bytes, dpi=dpi, first_page=page_no, last_page=page_no, **POPPLER_KW
+        )
+        img = imgs[0]
+        buf = io.BytesIO()
+        img.convert("RGB").save(buf, "JPEG", quality=quality)
+        buf.seek(0)
+        buffers.append(buf)
+        del img, imgs
         gc.collect()
-        if update:
-            update(p / pages)
-    if update:
-        update(1.0)
-    return jpeg_paths
 
-
-def rebuild_pdf(paths: List[Path]) -> bytes:
-    pdf = img2pdf.convert([str(p) for p in paths])
-    for p in paths:
-        p.unlink(missing_ok=True)
-    return pdf
+    # combine into PDF
+    pdf_bytes_out = img2pdf.convert(buffers)
+    return pdf_bytes_out
 
 
 def main() -> None:
@@ -79,66 +73,64 @@ def main() -> None:
     st.markdown(
         f"""
         <style>
-        :root {{
+          :root {{
             --font-base: {BASE_FONT_PX}px;
             --font-title: {TITLE_FONT_PX}px;
             --font-expander: {EXPANDER_FONT_PX}px;
             --font-footer: {FOOTER_FONT_PX}px;
-        }}
-        html, body {{ font-family: 'Inter', sans-serif; }}
+          }}
+          html, body {{ font-family: 'Inter', sans-serif; }}
 
-        /* all text in main container */
-        .block-container * {{
+          /* all text in main container */
+          .block-container * {{
             font-size: var(--font-base) !important;
-        }}
+          }}
 
-        /* headings */
-        .block-container h1 {{
+          /* headings */
+          .block-container h1 {{
             font-size: var(--font-title) !important;
             margin-bottom: .5em;
-        }}
+          }}
 
-        /* file uploader */
-        .stFileUploader, .stFileUploader * {{
+          /* file uploader */
+          .stFileUploader, .stFileUploader * {{
             font-size: var(--font-base) !important;
-        }}
+          }}
 
-        /* expander header */
-        .stExpanderHeader {{
+          /* expander header: clickable element */
+          div[data-testid="stExpander"] > div[role="button"] {{
             font-size: var(--font-expander) !important;
-            color: inherit !important;
             background-color: transparent !important;
-        }}
-        /* remove hover/focus outline, box‑shadow & tint */
-        .stExpanderHeader:hover,
-        .stExpanderHeader:focus,
-        .stExpanderHeader:focus-visible {{
+            color: inherit !important;
             outline: none !important;
             box-shadow: none !important;
-            color: inherit !important;
+          }}
+          /* remove hover/focus effects */
+          div[data-testid="stExpander"] > div[role="button"]:hover,
+          div[data-testid="stExpander"] > div[role="button"]:focus,
+          div[data-testid="stExpander"] > div[role="button"]:focus-visible {{
             background-color: transparent !important;
-        }}
+          }}
+          /* ensure children inherit color */
+          div[data-testid="stExpander"] > div[role="button"] * {{
+            color: inherit !important;
+          }}
 
-        /* slider & expander content */
-        div[data-testid="stExpander"] *,
-        .stSlider label,
-        .stSlider span {{
+          /* slider & expander content */
+          div[data-testid="stExpander"] *,
+          .stSlider label,
+          .stSlider span {{
             font-size: var(--font-expander) !important;
-        }}
+          }}
 
-        /* progress bar */
-        .stProgress > div > div {{
-            height: 16px;
-        }}
+          /* progress bar */
+          .stProgress > div > div {{ height: 16px; }}
 
-        /* button */
-        button[kind="primary"] {{
-            padding: .6rem 1.5rem;
-            font-size: 1.1rem;
-        }}
+          /* button */
+          button[kind="primary"] {{ padding: .6rem 1.5rem; font-size: 1.1rem; }}
 
-        /* hide default footer */
-        footer {{ visibility: hidden; }}
+          /* hide default footer */
+          footer {{ visibility: hidden; }}
         </style>
         """,
         unsafe_allow_html=True,
@@ -146,18 +138,23 @@ def main() -> None:
 
     # title and description
     st.markdown(
-        "<h1>📄 PDF Flattener</h1>", unsafe_allow_html=True
+        f"<h1 style='font-size: var(--font-title);'>📄 PDF Flattener</h1>",
+        unsafe_allow_html=True,
     )
     st.markdown(
-        "<p>Upload a PDF. Each page is rasterised to an image and rebuilt into a <strong>text-free</strong> PDF. "
-        "If processing fails, lower DPI or JPEG quality and try again.</p>",
+        f"<p style='font-size: var(--font-base); line-height:1.6;'>"
+        "Upload a PDF. Each page is rasterised in memory to an image and rebuilt into a <strong>text-free</strong> PDF. "
+        "If processing fails, lower DPI or JPEG quality and try again."
+        "</p>",
         unsafe_allow_html=True,
     )
 
     # uploader
-    file = st.file_uploader("Choose a PDF", type=["pdf"], label_visibility="visible")
+    file = st.file_uploader(
+        "Choose a PDF", type=["pdf"], label_visibility="visible"
+    )
 
-    # options
+    # options expander
     with st.expander("Advanced options", expanded=False):
         dpi = st.slider("DPI", 72, 600, 200, step=24)
         quality = st.slider("JPEG quality", 50, 100, 90, step=5)
@@ -171,20 +168,13 @@ def main() -> None:
         if st.button("Flatten PDF", type="primary"):
             logging.info("Flattening %s dpi=%s q=%s", file.name, dpi, quality)
             try:
+                pdf_bytes = file.read()
                 with st.spinner("Processing… this may take a moment"):
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-                        tmp.write(file.read())
-                        src = Path(tmp.name)
-                    with tempfile.TemporaryDirectory() as td:
-                        progress = st.progress(0.0)
-                        pages = rasterise_streaming(src, dpi, quality, Path(td), progress.progress)
-                        flattened = rebuild_pdf(pages)
+                    flattened = flatten_pdf_in_memory(pdf_bytes, dpi, quality)
             except Exception as e:
                 logging.exception(e)
                 st.error("Processing failed — lower DPI/quality or verify Poppler install.")
                 return
-            finally:
-                src.unlink(missing_ok=True)
 
             st.success("Done! Download below.")
             st.download_button(
@@ -196,7 +186,7 @@ def main() -> None:
 
     # footer
     st.markdown(
-        "<div style='text-align:center; font-size: var(--font-footer); margin-top: 3rem;'>"
+        f"<div style='text-align:center; font-size: var(--font-footer); margin-top:3rem;'>"  
         "Free to Use – Made by Fyne LLC – Arthur Lee – July 2025"  
         "</div>",
         unsafe_allow_html=True,
