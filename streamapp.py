@@ -78,25 +78,43 @@ def main():
     st.markdown(
         f"""
         <style>
-          :root {{
+        :root {{
             --font-base:{BASE_FONT_PX}px;
             --font-title:{TITLE_FONT_PX}px;
             --font-expander:{EXPANDER_FONT_PX}px;
             --font-footer:{FOOTER_FONT_PX}px;
-          }}
-          html,body{{font-family:'Inter',sans-serif;}}
-          .block-container *{{font-size:var(--font-base)!important;}}
-          .block-container h1{{font-size:var(--font-title)!important;margin-bottom:.5em;}}
-          .stFileUploader *{{font-size:var(--font-base)!important;}}
-          div[data-testid="stExpander"]>div[role="button"]{{font-size:var(--font-expander)!important;background:transparent!important;}}
-          div[data-testid="stExpander"] *, .stSlider label, .stSlider span{{font-size:var(--font-expander)!important;}}
-          .stProgress>div>div{{height:16px;}}
-          button[kind="primary"]{{padding:.6rem 1.5rem;font-size:1.1rem;}}
-          footer{{visibility:hidden;}}
+        }}
+        html,body{{font-family:'Inter',sans-serif;}}
+        .block-container *{{font-size:var(--font-base)!important;}}
+        .block-container h1{{font-size:var(--font-title)!important;margin-bottom:.5em;}}
+        .stFileUploader *{{font-size:var(--font-base)!important;}}
+
+        div[data-testid="stExpander"]>div[role="button"]{{
+            font-size:var(--font-expander)!important;
+            background:transparent!important;
+        }}
+        div[data-testid="stExpander"] *, .stSlider label{{
+            font-size:var(--font-expander)!important;
+        }}
+        /* numeric values – smaller and lifted higher */
+        .stSlider span {{
+        font-size:calc(var(--font-expander)*0.8)!important;
+        position:relative; top:-14px;
+        }}
+        /* numeric value on slider thumb */
+        .stSlider [class*="ThumbValue"]{{
+        font-size:calc(var(--font-expander)*0.8) !important;
+        transform:translateY(-12px) !important;  /* lift off the track */
+        }}
+        .stProgress>div>div{{height:16px;}}
+        button[kind="primary"]{{padding:.6rem 1.5rem;font-size:1.1rem;}}
+        footer{{visibility:hidden;}}
         </style>
         """,
         unsafe_allow_html=True,
     )
+
+
 
     # Title
     st.markdown("<h1>📄 PDF Flattener</h1>", unsafe_allow_html=True)
