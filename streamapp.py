@@ -15,6 +15,7 @@ import logging
 import os
 import shutil
 import sys
+from pathlib import Path  # ensure Path is available
 from typing import Callable, List
 
 import img2pdf
