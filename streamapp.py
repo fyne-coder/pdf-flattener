@@ -1,22 +1,13 @@
 #!/usr/bin/env python3
 """
-streamlit_app.py — Flatten a PDF into an image‑only PDF (low‑memory, no disk files).
+streamlit_app.py – Flatten a PDF into a picture‑only PDF (in memory).
 
-Edit these FOUR constants to resize all text:
-  BASE_FONT_PX       – body text & uploader copy
-  TITLE_FONT_PX      – main heading
-  EXPANDER_FONT_PX   – expander header + slider labels/ticks
-  FOOTER_FONT_PX     – footer line
+Const controls: BASE_FONT_PX, TITLE_FONT_PX, EXPANDER_FONT_PX, FOOTER_FONT_PX
 """
 
-import io
-import gc
-import logging
-import os
-import shutil
-import sys
-from pathlib import Path  # ensure Path is available
-from typing import Callable, List
+import io, gc, logging, os, shutil, sys
+from pathlib import Path
+from typing import List, Callable, Optional
 
 import img2pdf
 import streamlit as st
@@ -35,24 +26,35 @@ FOOTER_FONT_PX   = 18
 # ── Poppler & limits ───────────────────────────────────────
 PDFINFO_DIR   = os.path.dirname(shutil.which("pdfinfo") or "")
 POPPLER_KW    = {"poppler_path": PDFINFO_DIR} if PDFINFO_DIR else {}
-MAX_FILE_SIZE = 25_000_000  # 25 MB
+MAX_FILE_SIZE = 25_000_000  # 25 MB
 
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 
 
-def flatten_pdf_in_memory(pdf_bytes: bytes, dpi: int, quality: int) -> bytes:
+def flatten_pdf_in_memory(
+    pdf_bytes: bytes,
+    dpi: int,
+    quality: int,
+    progress_cb: Optional[Callable[[float], None]] = None,
+) -> bytes:
     """Render PDF pages in memory and return flattened PDF bytes."""
     try:
         info = pdfinfo_from_bytes(pdf_bytes, **POPPLER_KW)
         page_count = int(info.get("Pages", 0))
     except pdf2image_exc.PDFInfoNotInstalledError:
-        st.error("Poppler not found. Install poppler‑utils and ensure 'pdfinfo' is in PATH.")
+        st.error(
+            "Poppler not found. Install poppler‑utils and be sure 'pdfinfo' is in PATH."
+        )
         raise
 
     buffers: List[io.BytesIO] = []
     for page_no in range(1, page_count + 1):
         imgs = convert_from_bytes(
-            pdf_bytes, dpi=dpi, first_page=page_no, last_page=page_no, **POPPLER_KW
+            pdf_bytes,
+            dpi=dpi,
+            first_page=page_no,
+            last_page=page_no,
+            **POPPLER_KW,
         )
         img = imgs[0]
         buf = io.BytesIO()
@@ -62,133 +64,101 @@ def flatten_pdf_in_memory(pdf_bytes: bytes, dpi: int, quality: int) -> bytes:
         del img, imgs
         gc.collect()
 
-    # combine into PDF
-    pdf_bytes_out = img2pdf.convert(buffers)
-    return pdf_bytes_out
+        # update progress if callback supplied
+        if progress_cb:
+            progress_cb(page_no / page_count)
+
+    return img2pdf.convert(buffers)
 
 
-def main() -> None:
+def main():
     st.set_page_config(page_title="PDF Flattener", page_icon="📄", layout="centered")
 
-    # inject CSS variables and global rules
+    # Inject global CSS
     st.markdown(
         f"""
         <style>
           :root {{
-            --font-base: {BASE_FONT_PX}px;
-            --font-title: {TITLE_FONT_PX}px;
-            --font-expander: {EXPANDER_FONT_PX}px;
-            --font-footer: {FOOTER_FONT_PX}px;
+            --font-base:{BASE_FONT_PX}px;
+            --font-title:{TITLE_FONT_PX}px;
+            --font-expander:{EXPANDER_FONT_PX}px;
+            --font-footer:{FOOTER_FONT_PX}px;
           }}
-          html, body {{ font-family: 'Inter', sans-serif; }}
-
-          /* all text in main container */
-          .block-container * {{
-            font-size: var(--font-base) !important;
-          }}
-
-          /* headings */
-          .block-container h1 {{
-            font-size: var(--font-title) !important;
-            margin-bottom: .5em;
-          }}
-
-          /* file uploader */
-          .stFileUploader, .stFileUploader * {{
-            font-size: var(--font-base) !important;
-          }}
-
-          /* expander header: clickable element */
-          div[data-testid="stExpander"] > div[role="button"] {{
-            font-size: var(--font-expander) !important;
-            background-color: transparent !important;
-            color: inherit !important;
-            outline: none !important;
-            box-shadow: none !important;
-          }}
-          /* remove hover/focus effects */
-          div[data-testid="stExpander"] > div[role="button"]:hover,
-          div[data-testid="stExpander"] > div[role="button"]:focus,
-          div[data-testid="stExpander"] > div[role="button"]:focus-visible {{
-            background-color: transparent !important;
-          }}
-          /* ensure children inherit color */
-          div[data-testid="stExpander"] > div[role="button"] * {{
-            color: inherit !important;
-          }}
-
-          /* slider & expander content */
-          div[data-testid="stExpander"] *,
-          .stSlider label,
-          .stSlider span {{
-            font-size: var(--font-expander) !important;
-          }}
-
-          /* progress bar */
-          .stProgress > div > div {{ height: 16px; }}
-
-          /* button */
-          button[kind="primary"] {{ padding: .6rem 1.5rem; font-size: 1.1rem; }}
-
-          /* hide default footer */
-          footer {{ visibility: hidden; }}
+          html,body{{font-family:'Inter',sans-serif;}}
+          .block-container *{{font-size:var(--font-base)!important;}}
+          .block-container h1{{font-size:var(--font-title)!important;margin-bottom:.5em;}}
+          .stFileUploader *{{font-size:var(--font-base)!important;}}
+          div[data-testid="stExpander"]>div[role="button"]{{font-size:var(--font-expander)!important;background:transparent!important;}}
+          div[data-testid="stExpander"] *, .stSlider label, .stSlider span{{font-size:var(--font-expander)!important;}}
+          .stProgress>div>div{{height:16px;}}
+          button[kind="primary"]{{padding:.6rem 1.5rem;font-size:1.1rem;}}
+          footer{{visibility:hidden;}}
         </style>
         """,
         unsafe_allow_html=True,
     )
 
-    # title and description
-    st.markdown(
-        f"<h1 style='font-size: var(--font-title);'>📄 PDF Flattener</h1>",
-        unsafe_allow_html=True,
+    # Title
+    st.markdown("<h1>📄 PDF Flattener</h1>", unsafe_allow_html=True)
+
+    # Friendly instructions
+    st.info(
+        """
+        • **Upload** the PDF you marked or signed.  
+        • We flatten every page into a picture‑only PDF.  
+        • Redactions, pen strokes, and signatures stay locked in place, so no one can copy, search, or uncover the covered text.
+        """
     )
     st.markdown(
-        f"<p style='font-size: var(--font-base); line-height:1.6;'>"
-        "Upload a PDF. Each page is rasterised in memory to an image and rebuilt into a <strong>text-free</strong> PDF. "
-        "If processing fails, lower DPI or JPEG quality and try again."
-        "</p>",
+        "<p>If it errors, lower the DPI or image quality and try again.</p>",
         unsafe_allow_html=True,
     )
 
-    # uploader
-    file = st.file_uploader(
-        "Choose a PDF", type=["pdf"], label_visibility="visible"
-    )
+    # ── FORM START ──────────────────────────────────────────
+    with st.form("flattener_form", clear_on_submit=True):
+        uploaded = st.file_uploader("Choose a PDF", type=["pdf"])
+        with st.expander("Advanced options", expanded=False):
+            dpi = st.slider("DPI", 72, 600, 200, step=24)
+            quality = st.slider("JPEG quality", 50, 100, 90, step=5)
+        submit = st.form_submit_button("Flatten PDF", use_container_width=True)
 
-    # options expander
-    with st.expander("Advanced options", expanded=False):
-        dpi = st.slider("DPI", 72, 600, 200, step=24)
-        quality = st.slider("JPEG quality", 50, 100, 90, step=5)
-
-    # process
-    if file:
-        if file.size > MAX_FILE_SIZE:
+    # ── AFTER SUBMIT ────────────────────────────────────────
+    if submit:
+        if not uploaded:
+            st.error("Please upload a PDF first.")
+        elif uploaded.size > MAX_FILE_SIZE:
             st.error("File too large. Try a smaller PDF or lower DPI.")
-            st.stop()
+        else:
+            logging.info("Flattening %s dpi=%s q=%s", uploaded.name, dpi, quality)
 
-        if st.button("Flatten PDF", type="primary"):
-            logging.info("Flattening %s dpi=%s q=%s", file.name, dpi, quality)
+            # set up progress bar
+            progress = st.progress(0.0, text="Rasterising pages…")
+
             try:
-                pdf_bytes = file.read()
-                with st.spinner("Processing… this may take a moment"):
-                    flattened = flatten_pdf_in_memory(pdf_bytes, dpi, quality)
-            except Exception as e:
-                logging.exception(e)
-                st.error("Processing failed — lower DPI/quality or verify Poppler install.")
-                return
+                pdf_bytes = uploaded.read()
+                flattened = flatten_pdf_in_memory(
+                    pdf_bytes,
+                    dpi,
+                    quality,
+                    progress_cb=lambda f: progress.progress(f),
+                )
+                progress.empty()  # clear progress bar
 
-            st.success("Done! Download below.")
-            st.download_button(
-                "⬇️ Download flattened PDF",
-                data=flattened,
-                file_name=f"{Path(file.name).stem}_flattened.pdf",
-                mime="application/pdf",
-            )
+                st.success("Done! Download below.")
+                st.download_button(
+                    "⬇️ Download flattened PDF",
+                    data=flattened,
+                    file_name=f"{Path(uploaded.name).stem}_flattened.pdf",
+                    mime="application/pdf",
+                )
+            except Exception:
+                progress.empty()
+                st.error("Flattening failed – lower DPI or check Poppler install.")
 
-    # footer
+    # Footer
     st.markdown(
-        f"<div style='text-align:center; font-size: var(--font-footer); margin-top:3rem;'>"  
-        "Free to Use – Made by Fyne LLC – Arthur Lee – July 2025"  
+        "<div style='text-align:center;font-size:var(--font-footer);margin-top:3rem;'>"
+        "Free to use – Made by Fyne LLC – Arthur Lee – July 2025"
         "</div>",
         unsafe_allow_html=True,
     )
